@@ -6,5 +6,5 @@
  */
 window.APP_CONFIG = {
   BACKEND_URL: 'https://script.google.com/macros/s/AKfycbw54TkRTWyXjD-IzUagETsQ9_MHw9Aw62jLUe_M5KyrY-CjyorKGair9X1Ieyr1B36VXA/exec',
-  GOOGLE_CLIENT_ID: ''
+  GOOGLE_CLIENT_ID: '14353345728-j0r1pq0aam569am11eedmfufk2st09nj.apps.googleusercontent.com'
 };
