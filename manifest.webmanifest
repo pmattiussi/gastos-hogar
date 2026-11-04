@@ -1,0 +1,17 @@
+{
+  "name": "Gastos del hogar",
+  "short_name": "Gastos",
+  "description": "Gastos, ingresos, tarjetas y ahorro del hogar",
+  "lang": "es-AR",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F3F5F7",
+  "theme_color": "#0E1A2B",
+  "icons": [
+    { "src": "icons/icono-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icono-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icono-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
