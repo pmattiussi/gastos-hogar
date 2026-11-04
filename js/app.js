@@ -51,6 +51,22 @@
     el.addEventListener('blur', function () { var n = num(el.value); if (n) { el.value = L.formatoNumero(n); if (alCambiar) alCambiar(el.value); } });
   }
 
+  // ---------- Caché local: muestra al instante lo último visto y actualiza en segundo plano ----------
+  var PREF_CACHE = 'gh_c_';
+  function consultar(accion, datos) {
+    var k = PREF_CACHE + accion + '|' + JSON.stringify(datos || {});
+    if (S.soloCache) {
+      var c = leerLocal(k);
+      return c !== null && c !== undefined ? Promise.resolve(c) : Promise.reject(new Error('sin-cache'));
+    }
+    return api(accion, datos).then(function (r) { guardarLocal(k, r); return r; });
+  }
+  function borrarCache() {
+    try {
+      Object.keys(localStorage).forEach(function (k) { if (k.indexOf(PREF_CACHE) === 0 || k === 'gh_boot') localStorage.removeItem(k); });
+    } catch (e) { /* nada */ }
+  }
+
   function indexar() {
     S.idx = { medios: {}, cats: {}, usuarios: {} };
     S.boot.medios.forEach(function (m) { S.idx.medios[m.id] = m; });
@@ -156,15 +172,21 @@
   }
 
   function cargar() {
-    pantalla('<div class="arranque"><div class="spinner" aria-hidden="true"></div><p>Cargando…</p></div>');
+    var guardado = leerLocal('gh_boot');
+    if (guardado && guardado.yo) { S.boot = guardado; indexar(); render(); }
+    else pantalla('<div class="arranque"><div class="spinner" aria-hidden="true"></div><p>Cargando…</p></div>');
     api('bootstrap').then(function (b) {
-      S.boot = b; indexar(); render();
+      var cambio = !guardado || JSON.stringify(b) !== JSON.stringify(guardado);
+      S.boot = b; guardarLocal('gh_boot', b); indexar();
+      if (!guardado) render();
+      else if (cambio && !hojaAbierta) render(true);
     }).catch(function (e) {
-      if (/no está autorizado/.test(e.message)) { Sesion.cerrar(); mostrarLogin(e.message); return; }
+      if (/no está autorizado/.test(e.message)) { borrarCache(); Sesion.cerrar(); mostrarLogin(e.message); return; }
+      if (guardado) { toast('Sin conexión', 'Estás viendo los últimos datos guardados.'); return; }
       pantalla('<div class="login"><h1>No se pudo cargar</h1><p>' + esc(e.message) + '</p><button class="btn" data-acc="reintentar">Reintentar</button></div>');
     });
   }
-  function recargarBoot() { return api('bootstrap').then(function (b) { S.boot = b; indexar(); }); }
+  function recargarBoot() { return api('bootstrap').then(function (b) { S.boot = b; guardarLocal('gh_boot', b); indexar(); }); }
 
   // ---------- Render general ----------
   var NAV = [
@@ -183,21 +205,41 @@
   }
   var VISTAS = {};
   var renderId = 0;
-  function render() {
-    var id = ++renderId;
-    var v = VISTAS[S.vista] || VISTAS.inicio;
-    pantalla('<main class="pantalla" id="contenido"><div class="arranque" style="min-height:50vh"><div class="spinner"></div></div></main>' + nav());
-    Promise.resolve(v()).then(function (html) {
+  /**
+   * Pinta la vista en dos tiempos: primero con los datos guardados en el celular (instantáneo)
+   * y después con los datos frescos del servidor, solo si cambiaron.
+   */
+  function render(mantenerScroll) {
+    var id = ++renderId, vista = S.vista, v = VISTAS[vista] || VISTAS.inicio, mostrado = null;
+    var y = mantenerScroll ? window.scrollY : 0;
+    var previo = mantenerScroll && $('contenido') ? $('contenido').innerHTML : null;
+    pantalla('<main class="pantalla" id="contenido">' + (previo || '<div class="arranque" style="min-height:50vh"><div class="spinner"></div></div>') + '</main>' + nav());
+    if (previo) window.scrollTo(0, y);
+    function mostrar(html) {
+      if (id !== renderId || html === mostrado) return;
+      var c = $('contenido'), activo = document.activeElement;
+      if (mostrado && activo && c.contains(activo) && /INPUT|TEXTAREA/.test(activo.tagName)) return; // no pisar lo que se está escribiendo
+      var pos = window.scrollY;
+      c.innerHTML = html;
+      if (mostrado || previo) window.scrollTo(0, pos);
+      mostrado = html;
+      if (VISTAS[vista].despues) VISTAS[vista].despues();
+    }
+    S.soloCache = true;
+    var rapido;
+    try { rapido = Promise.resolve(v()); } catch (e) { rapido = Promise.reject(e); }
+    S.soloCache = false;
+    rapido.then(mostrar, function () { /* sin datos guardados: se espera al servidor */ });
+    var fresco;
+    try { fresco = Promise.resolve(v()); } catch (e) { fresco = Promise.reject(e); }
+    fresco.then(mostrar).catch(function (e) {
       if (id !== renderId) return;
-      $('contenido').innerHTML = html;
-      if (VISTAS[S.vista].despues) VISTAS[S.vista].despues();
-    }).catch(function (e) {
-      if (id !== renderId) return;
+      if (mostrado) { toast('No se pudo actualizar', 'Estás viendo los últimos datos guardados. ' + e.message); return; }
       $('contenido').innerHTML = '<div class="tarjeta"><h2>No se pudo cargar</h2><p class="sutil">' + esc(e.message) + '</p><button class="btn secundario" data-acc="refrescar">Reintentar</button></div>';
     });
-    window.scrollTo(0, 0);
+    if (!previo) window.scrollTo(0, 0);
   }
-  function refrescar() { render(); }
+  function refrescar() { render(true); }
 
   function selectorMes(titulo) {
     return '<div class="encabezado"><div class="selector-mes">' +
@@ -216,8 +258,12 @@
   // ---------- Inicio ----------
   VISTAS.inicio = function () {
     var per = S.periodo;
-    return Promise.all([api('resumen.mes', { periodo: per }), api('caja.periodo', { periodo: per }), api('previstos.listar', { periodo: per })]).then(function (r) {
-      var res = r[0], caja = r[1], prev = r[2];
+    return consultar('pantalla.inicio', { periodo: per }).catch(function (e) {
+      if (!/Acción desconocida/.test(e.message)) throw e;
+      return Promise.all([consultar('resumen.mes', { periodo: per }), consultar('caja.periodo', { periodo: per }), consultar('previstos.listar', { periodo: per })])
+        .then(function (r) { return { resumen: r[0], caja: r[1], previstos: r[2] }; });
+    }).then(function (r) {
+      var res = r.resumen, caja = r.caja, prev = r.previstos;
       var p = S.persona;
       var c = p === 'hogar' ? res.hogar : res.personas[p];
       var alertas = calcularAlertas(res, caja, prev);
@@ -393,7 +439,7 @@
     }).join('') + '</div>';
 
     if (m.tipo === 'ingresos') {
-      return api('ingresos.listar', { periodo: per }).then(function (lista) {
+      return consultar('ingresos.listar', { periodo: per }).then(function (lista) {
         lista = lista.filter(function (i) { return !m.persona || i.persona === m.persona; }).sort(function (a, b) { return a.fecha < b.fecha ? 1 : -1; });
         var total = lista.reduce(function (s, i) { return s + L.montoArs(i); }, 0);
         return cab + chipsPersona + '<section class="tarjeta"><div class="tarjeta-cab"><h2>Ingresos del mes</h2><span class="num" style="font-weight:800">' + dinero(total) + '</span></div>' +
@@ -407,7 +453,7 @@
       });
     }
 
-    return api('movimientos.listar', { desde: desde, hasta: hasta, por: m.por, incluirPrevistos: true }).then(function (lista) {
+    return consultar('movimientos.listar', { desde: desde, hasta: hasta, por: m.por, incluirPrevistos: true }).then(function (lista) {
       var txt = L.normalizarTexto(m.texto);
       lista = lista.filter(function (x) {
         if (m.persona && x.persona !== m.persona) return false;
@@ -471,7 +517,7 @@
 
   // ---------- Caja ----------
   VISTAS.caja = function () {
-    return api('caja.periodo', { periodo: S.periodo }).then(function (c) {
+    return consultar('caja.periodo', { periodo: S.periodo }).then(function (c) {
       var p = S.persona;
       var t = c.tarjetas.filter(function (x) { return p === 'hogar' || x.titular === p; });
       var totalT = t.reduce(function (s, x) { return s + x.total_ars; }, 0);
@@ -494,7 +540,7 @@
 
   // ---------- Cash flow ----------
   VISTAS.flujo = function () {
-    return api('flujo.proyeccion', { meses: 6 }).then(function (r) {
+    return consultar('flujo.proyeccion', { meses: 6 }).then(function (r) {
       var p = S.persona;
       var meses = r.meses.map(function (m) { return { per: m.periodo, c: p === 'hogar' ? m.hogar : m.personas[p] }; });
       var max = Math.max.apply(null, meses.map(function (m) { return Math.max(m.c.ingresos_cobrados + m.c.ingresos_estimados, m.c.egresos); }).concat([1]));
@@ -559,7 +605,7 @@
 
   // ---------- Objetivos ----------
   VISTAS.objetivos = function () {
-    return Promise.all([api('objetivos.listar'), api('resumen.mes', { periodo: L.periodoDe(S.hoy) })]).then(function (r) {
+    return Promise.all([consultar('objetivos.listar'), consultar('resumen.mes', { periodo: L.periodoDe(S.hoy) })]).then(function (r) {
       var objs = r[0], res = r[1].hogar;
       S.boot.objetivos = objs;
       var falta = Math.max(0, res.ahorro_generado_usd - res.dolarizado_usd);
@@ -596,7 +642,7 @@
 
   // ---------- Habituales ----------
   VISTAS.habituales = function () {
-    return api('habituales.listar').then(function (lista) {
+    return consultar('habituales.listar').then(function (lista) {
       var total = lista.reduce(function (s, h) { return s + (h.moneda === 'USD' ? h.monto * ((S.boot.cotizacion || {}).venta || 0) : h.monto); }, 0);
       var html = cabSub('Gastos habituales', '<button class="btn-mini" data-acc="nuevo-habitual">+ Nuevo</button>');
       html += '<p class="sutil">Se cargan solos como previstos en el mes actual y el siguiente. Al confirmarlos con otro monto, ese valor queda para adelante.</p>';
@@ -613,7 +659,7 @@
 
   // ---------- Presupuestos ----------
   VISTAS.presupuestos = function () {
-    return Promise.all([api('presupuestos.listar'), api('resumen.mes', { periodo: L.periodoDe(S.hoy) })]).then(function (r) {
+    return Promise.all([consultar('presupuestos.listar'), consultar('resumen.mes', { periodo: L.periodoDe(S.hoy) })]).then(function (r) {
       var pres = r[0], consumo = r[1].hogar.categorias_consumo;
       var html = cabSub('Presupuestos') + '<p class="sutil">Tope mensual por categoría para el hogar. Se mide contra lo comprado en el mes, aunque se pague en cuotas. Dejalo vacío para no tener tope.</p>';
       html += '<section class="tarjeta" style="gap:0">' + categoriasRaiz().map(function (c) {
@@ -638,7 +684,7 @@
 
   // ---------- Fechas de tarjetas ----------
   VISTAS.calendario = function () {
-    return api('calendario.listar', { desde: L.periodoDe(S.hoy) }).then(function (cal) {
+    return consultar('calendario.listar', { desde: L.periodoDe(S.hoy) }).then(function (cal) {
       var pers = [L.periodoDe(S.hoy), L.sumarPeriodo(L.periodoDe(S.hoy), 1)];
       var html = cabSub('Fechas de tarjetas') + '<p class="sutil">Con cada resumen nuevo, corregí el próximo cierre y vencimiento. Los meses siguientes se recalculan solos y las compras pasan al resumen que les toca.</p>';
       S.boot.usuarios.forEach(function (u) {
@@ -810,19 +856,23 @@
     var f = F, monto = num(f.monto);
     if (!(monto > 0)) return errorForm('Ingresá un monto mayor a cero.');
     if (!L.esFecha(f.fecha)) return errorForm('Revisá la fecha.');
+    var copia = Object.assign({}, f); // para reabrir el formulario si falla
+    function fallo(e) {
+      F = copia; pintarForm(); errorForm(e.message + ' — Revisá y volvé a guardar.');
+    }
     var datos = { fecha: f.fecha, monto: monto, moneda: f.moneda, persona: f.persona, descripcion: f.desc.trim() };
     if (f.moneda === 'USD' && num(f.cotizacion) > 0) datos.cotizacion = num(f.cotizacion);
-    var boton = $('f-guardar'); boton.disabled = true; boton.textContent = 'Guardando…';
     var p;
     if (f.tipo === 'ingreso') {
       datos.fuente = f.fuente; datos.recurrente = f.recurrente;
+      cerrarHoja(); toast('Guardando…');
       p = f.id ? api('ingresos.editar', Object.assign({ id: f.id }, datos)) : api('ingresos.crear', datos);
-      return p.then(function () {
-        cerrarHoja(); toast(f.id ? 'Ingreso actualizado' : 'Ingreso guardado'); refrescar();
-      }).catch(function (e) { boton.disabled = false; boton.textContent = 'Guardar'; errorForm(e.message); });
+      return p.then(function () { toast(f.id ? 'Ingreso actualizado' : 'Ingreso guardado'); refrescar(); }).catch(fallo);
     }
-    if (!f.cat) { boton.disabled = false; boton.textContent = 'Guardar gasto'; return errorForm('Elegí una categoría.'); }
-    if (!f.medio) { boton.disabled = false; boton.textContent = 'Guardar gasto'; return errorForm('Elegí el medio de pago.'); }
+    if (!f.cat) return errorForm('Elegí una categoría.');
+    if (!f.medio) return errorForm('Elegí el medio de pago.');
+    guardarLocal('ultimo_medio_' + f.persona, f.medio);
+    cerrarHoja(); toast('Guardando…');
     datos.categoria_id = f.sub || f.cat; datos.medio_id = f.medio; datos.cuotas = f.cuotas;
     if (f.id) {
       p = api('movimientos.editar', Object.assign({ id: f.id }, datos));
@@ -831,8 +881,6 @@
       p = api('movimientos.crear', datos);
     }
     p.then(function (r) {
-      guardarLocal('ultimo_medio_' + f.persona, f.medio);
-      cerrarHoja();
       var aviso = r.aviso || {};
       toast((f.id ? 'Cambios guardados. ' : 'Gasto guardado. ') + (aviso.titulo || ''), r.habitual_actualizado ? 'El monto nuevo queda para los meses siguientes.' : r.habitual ? 'Queda previsto para el mes que viene.' : aviso.detalle);
       if (r.sugerencia_habitual) {
@@ -843,10 +891,7 @@
           if (si) return api('habituales.desdeMovimiento', { id: r.sugerencia_habitual.movimiento_id }).then(function () { toast('Marcado como habitual', 'Queda previsto para el mes que viene.'); });
         });
       }
-    }).then(function () { refrescar(); }).catch(function (e) {
-      if (!hojaAbierta) return errorToast(e);
-      boton.disabled = false; boton.textContent = 'Guardar'; errorForm(e.message);
-    });
+    }, function (e) { fallo(e); throw null; }).then(function () { refrescar(); }).catch(function (e) { if (e) errorToast(e); });
   }
 
   function borrarForm() {
@@ -1078,7 +1123,7 @@
     'nuevo-habitual': function () { abrirHabitual(); },
     'editar-habitual': function (d) { abrirHabitual((S.habituales || []).filter(function (h) { return h.id === d.id; })[0]); },
     instalar: function () { if (S.instalar) { S.instalar.prompt(); S.instalar = null; } },
-    salir: function () { Sesion.cerrar(); S.boot = null; mostrarLogin(); }
+    salir: function () { borrarCache(); Sesion.cerrar(); S.boot = null; mostrarLogin(); }
   };
   document.addEventListener('click', function (e) {
     var el = e.target.closest('[data-acc]');

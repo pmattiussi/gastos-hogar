@@ -1,5 +1,5 @@
 /* Service worker: guarda la app para que abra rápido y sin conexión. Los datos siempre vienen del backend. */
-var VERSION = 'gastos-v4';
+var VERSION = 'gastos-v5';
 var ARCHIVOS = ['./', 'index.html', 'css/app.css', 'js/config.js', 'js/logica.js', 'js/iconos.js', 'js/api.js', 'js/app.js',
   'manifest.webmanifest', 'icons/icono-192.png', 'icons/icono-512.png'];
 
