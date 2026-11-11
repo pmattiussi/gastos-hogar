@@ -324,15 +324,16 @@
 
   function tarjetaPrevistos(prev) {
     var total = prev.reduce(function (s, m) { return s + L.montoArs(m); }, 0);
-    return '<section class="tarjeta"><div class="tarjeta-cab"><h2>Gastos habituales a confirmar</h2><span class="sutil num">' + dinero(total) + '</span></div>' +
+    return '<section class="tarjeta"><div class="tarjeta-cab"><h2>Gastos habituales del mes</h2><span class="sutil num">' + dinero(total) + '</span></div>' +
       '<div>' + prev.map(function (m) {
-        var atrasado = m.fecha < S.hoy;
+        var atrasado = m.fecha < S.hoy, auto = m.debito_automatico && !atrasado;
+        S.previstoAuto = S.previstoAuto || {}; S.previstoAuto[m.id] = !!m.debito_automatico;
         return '<div class="previsto"><span class="ico">' + icono(catIcono(m.categoria_id)) + '</span>' +
           '<div style="flex:1;min-width:0"><p style="font-weight:700;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(m.descripcion || catNombre(m.categoria_id)) + '</p>' +
-          '<p class="sutil chico">' + (atrasado ? '<span class="etiqueta naranja">Venció ' + esc(L.fechaCorta(m.fecha)) + '</span>' : esc(L.fechaCorta(m.fecha))) + ' · ' + esc(medioNombre(m.medio_id)) + '</p>' +
+          '<p class="sutil chico">' + (atrasado ? '<span class="etiqueta naranja">Venció ' + esc(L.fechaCorta(m.fecha)) + '</span>' : auto ? 'Débito automático · se carga solo el ' + esc(L.fechaCorta(m.fecha)) : esc(L.fechaCorta(m.fecha))) + ' · ' + esc(medioNombre(m.medio_id)) + '</p>' +
           '<p class="num" style="font-weight:800;margin-top:2px">' + dinero(m.monto, m.moneda) + '</p></div>' +
           '<div class="acciones"><button class="btn-mini" data-acc="omitir" data-id="' + m.id + '">No va</button>' +
-          '<button class="btn-mini primario" data-acc="confirmar" data-id="' + m.id + '">Confirmar</button></div></div>';
+          '<button class="btn-mini' + (auto ? '' : ' primario') + '" data-acc="confirmar" data-id="' + m.id + '">' + (auto ? 'Ajustar' : 'Confirmar') + '</button></div></div>';
       }).join('') + '</div></section>';
   }
 
@@ -911,7 +912,8 @@
     api('movimientos.listar', { desde: L.sumarPeriodo(per, -1) + '-01', hasta: L.sumarDias(L.sumarPeriodo(per, 2) + '-01', -1), incluirPrevistos: true }).then(function (lista) {
       var m = lista.filter(function (x) { return x.id === id; })[0];
       if (!m) throw new Error('No se encontró el gasto previsto');
-      var fecha = L.periodoDe(m.fecha) === L.periodoDe(S.hoy) && m.fecha > S.hoy ? S.hoy : m.fecha;
+      // Con débito automático la fecha es la del débito: confirmarlo antes con fecha de hoy lo mandaría a otro resumen
+      var fecha = !(S.previstoAuto || {})[m.id] && L.periodoDe(m.fecha) === L.periodoDe(S.hoy) && m.fecha > S.hoy ? S.hoy : m.fecha;
       abrirHoja('<div class="hoja-cab"><h2>' + esc(m.descripcion || catNombre(m.categoria_id)) + '</h2><button class="btn-icono" data-acc="cerrar" aria-label="Cerrar">' + icono('close') + '</button></div>' +
         '<p class="sutil">' + esc(medioNombre(m.medio_id)) + ' · ' + esc(nombre(m.persona)) + ' · previsto ' + esc(L.fechaCorta(m.fecha)) + '</p>' +
         '<div class="campo"><label for="c-monto">Monto pagado</label><div class="monto-grande"><span class="prefijo">' + (m.moneda === 'USD' ? 'US$' : '$') + '</span><input id="c-monto" inputmode="decimal" value="' + esc(numInput(m.monto)) + '"></div>' +

@@ -65,12 +65,16 @@ var Logica = (function () {
   }
 
   // ---------- Calendario de tarjetas ----------
+  /** Un ciclo por período (si hay filas repetidas, gana la fecha real sobre la estimada; si no, la primera). */
   function ciclosDeTarjeta(calendario, medioId) {
-    return calendario
-      .filter(function (r) { return r.medio_id === medioId && esFecha(r.fecha_cierre) && esFecha(r.fecha_vencimiento); })
-      .map(function (r) {
-        return { periodo: r.periodo, fecha_cierre: r.fecha_cierre, fecha_vencimiento: r.fecha_vencimiento, estimado: verdadero(r.estimado) };
-      })
+    var porPeriodo = {};
+    calendario.forEach(function (r) {
+      if (r.medio_id !== medioId || !esFecha(r.fecha_cierre) || !esFecha(r.fecha_vencimiento)) return;
+      var c = { periodo: r.periodo, fecha_cierre: r.fecha_cierre, fecha_vencimiento: r.fecha_vencimiento, estimado: verdadero(r.estimado) };
+      var previo = porPeriodo[r.periodo];
+      if (!previo || (previo.estimado && !c.estimado)) porPeriodo[r.periodo] = c;
+    });
+    return Object.keys(porPeriodo).map(function (k) { return porPeriodo[k]; })
       .sort(function (a, b) { return a.fecha_cierre < b.fecha_cierre ? -1 : a.fecha_cierre > b.fecha_cierre ? 1 : 0; });
   }
 
